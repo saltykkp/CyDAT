@@ -1,4 +1,4 @@
-# CyDAT (CyTOFKit_v02)
+# CyDAT (CyTOF Data Analysis Toolkit)
 
 High-dimensional single-cell CyTOF data analysis desktop app (PyQt6).
 
