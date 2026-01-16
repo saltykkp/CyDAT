@@ -1,4 +1,4 @@
-# CyTOF Data Analysis Software - User Manual
+# CyTOF Data Analysis Toolkit - User Manual
 
 ## Introduction
 This software is designed for high-dimensional single-cell CyTOF data analysis, providing clustering and dimensionality reduction visualization capabilities.
