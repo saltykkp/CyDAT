@@ -3,10 +3,50 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QDoubleSpinBox, QProgressBar, QGroupBox, QFormLayout, 
                              QTextEdit, QSplitter, QScrollArea, QFrame, QTableView, QHeaderView,
                              QListWidget, QAbstractItemView, QCheckBox, QListWidgetItem, QSizePolicy)
-from PyQt6.QtCore import Qt, pyqtSignal, QAbstractTableModel
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtCore import Qt, pyqtSignal, QAbstractTableModel, QSize
+from PyQt6.QtGui import QPixmap, QImage, QIcon
+from matplotlib import colormaps
+import numpy as np
 import os
 import pandas as pd
+
+HEATMAP_CMAP_OPTIONS = [
+    ("Blue to Red", "Spectral_r"),
+    ("Viridis", "viridis"),
+    ("Plasma", "plasma"),
+    ("Cividis", "cividis"),
+    ("Coolwarm", "coolwarm"),
+    ("RdYlBu", "RdYlBu_r"),
+    ("RdBu", "RdBu_r"),
+    ("YlOrRd", "YlOrRd"),
+    ("YlGnBu", "YlGnBu"),
+    ("Turbo", "turbo"),
+]
+
+
+def create_colormap_preview_icon(cmap_name, width=160, height=18):
+    cmap = colormaps[cmap_name]
+    gradient = np.linspace(0.0, 1.0, width)
+    rgb = (cmap(gradient)[:, :3] * 255).astype(np.uint8)
+    image = np.repeat(rgb[np.newaxis, :, :], height, axis=0)
+    qimage = QImage(
+        image.data,
+        width,
+        height,
+        3 * width,
+        QImage.Format.Format_RGB888,
+    ).copy()
+    return QIcon(QPixmap.fromImage(qimage))
+
+
+def populate_heatmap_cmap_combo(combo):
+    combo.clear()
+    combo.setIconSize(QSize(160, 18))
+    combo.setMinimumHeight(34)
+    combo.view().setIconSize(QSize(160, 18))
+    combo.view().setMinimumWidth(240)
+    for label, cmap in HEATMAP_CMAP_OPTIONS:
+        combo.addItem(create_colormap_preview_icon(cmap), label, cmap)
 
 class ResizingLabel(QLabel):
     def __init__(self, parent=None):
@@ -103,6 +143,10 @@ class ClusteringTab(QWidget):
         self.algo_combo.currentTextChanged.connect(self.update_params)
         self.algo_combo.setMinimumHeight(30)
         algo_layout.addRow("Algorithm:", self.algo_combo)
+
+        self.heatmap_cmap_combo = QComboBox()
+        populate_heatmap_cmap_combo(self.heatmap_cmap_combo)
+        algo_layout.addRow("Heatmap Palette:", self.heatmap_cmap_combo)
         
         self.param_widget = QWidget()
         self.param_layout = QFormLayout(self.param_widget)
@@ -233,6 +277,12 @@ class ClusteringTab(QWidget):
             cb_metric.addItems(["euclidean", "manhattan", "cosine"])
             self.params['metric'] = cb_metric
             self.param_layout.addRow("Metric:", cb_metric)
+
+            sb_louvain_time = QSpinBox()
+            sb_louvain_time.setRange(60, 86400)
+            sb_louvain_time.setValue(2400)
+            self.params['louvain_time_limit'] = sb_louvain_time
+            self.param_layout.addRow("Louvain Time Limit (s):", sb_louvain_time)
             
             # Phenograph typically uses numpy seed globally or not exposed easily, 
             # but we'll include it for the logic
@@ -283,6 +333,7 @@ class ClusteringTab(QWidget):
             'type': 'clustering',
             'input_dir': input_dir,
             'algorithm': self.algo_combo.currentText(),
+            'heatmap_cmap': self.heatmap_cmap_combo.currentData(),
             'params': {k: v.value() if isinstance(v, QSpinBox) else v.currentText() 
                        for k, v in self.params.items()}
         }
@@ -350,6 +401,11 @@ class DimReductionTab(QWidget):
         self.algo_combo.currentTextChanged.connect(self.update_params)
         self.algo_combo.setMinimumHeight(30)
         algo_layout.addRow("Algorithm:", self.algo_combo)
+
+        self.max_cells_spin = QSpinBox()
+        self.max_cells_spin.setRange(100, 1000000)
+        self.max_cells_spin.setValue(50000)
+        algo_layout.addRow("Max Cells:", self.max_cells_spin)
         
         self.param_widget = QWidget()
         self.param_layout = QFormLayout(self.param_widget)
@@ -509,7 +565,8 @@ class DimReductionTab(QWidget):
             'algorithm': self.algo_combo.currentText(),
             'params': {k: v.value() if isinstance(v, (QSpinBox, QDoubleSpinBox)) else v.currentText() 
                        for k, v in self.params.items()},
-            'custom_file': self.file_label.text() if "Default" not in self.file_label.text() else None
+            'custom_file': self.file_label.text() if "Default" not in self.file_label.text() else None,
+            'max_cells': self.max_cells_spin.value()
         }
         self.run_analysis_signal.emit(config)
 
@@ -520,6 +577,158 @@ class DimReductionTab(QWidget):
     def update_log(self, text):
         self.log_area.append(text)
         
+    def show_preview(self, image_path):
+        self.image_label.set_image(image_path)
+
+
+class HeatmapTab(QWidget):
+    run_analysis_signal = pyqtSignal(dict)
+    stop_analysis_signal = pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
+        self.init_ui()
+
+    def init_ui(self):
+        main_layout = QHBoxLayout(self)
+
+        left_panel = QFrame()
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setSpacing(20)
+
+        data_group = QGroupBox("Data Source (Optional)")
+        data_layout = QVBoxLayout()
+        self.file_btn = QPushButton("Select CSV File")
+        self.file_btn.setMinimumHeight(40)
+        self.file_btn.clicked.connect(self.select_file)
+
+        self.file_label = QLabel("Default: Use Clustering Results")
+        self.file_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.file_label.setStyleSheet("color: #a0a0a0; font-size: 11px;")
+
+        self.clear_btn = QPushButton("Clear Selection")
+        self.clear_btn.clicked.connect(self.clear_file)
+
+        data_layout.addWidget(self.file_btn)
+        data_layout.addWidget(self.file_label)
+        data_layout.addWidget(self.clear_btn)
+        data_group.setLayout(data_layout)
+        left_layout.addWidget(data_group)
+
+        hint_group = QGroupBox("Input Notes")
+        hint_layout = QVBoxLayout()
+        hint_label = QLabel(
+            "Accepts a CSV with numeric marker columns.\n"
+            "If a cluster label column exists, it will be used automatically."
+        )
+        hint_label.setWordWrap(True)
+        hint_label.setStyleSheet("color: #a0a0a0; font-size: 11px;")
+        hint_layout.addWidget(hint_label)
+        hint_group.setLayout(hint_layout)
+        left_layout.addWidget(hint_group)
+
+        palette_group = QGroupBox("Heatmap Palette")
+        palette_layout = QFormLayout()
+        self.heatmap_cmap_combo = QComboBox()
+        populate_heatmap_cmap_combo(self.heatmap_cmap_combo)
+        palette_layout.addRow("Palette:", self.heatmap_cmap_combo)
+        palette_group.setLayout(palette_layout)
+        left_layout.addWidget(palette_group)
+
+        left_layout.addStretch()
+
+        exec_group = QGroupBox("Execution")
+        exec_layout = QVBoxLayout()
+        self.run_btn = QPushButton("Generate Heatmap")
+        self.run_btn.setMinimumHeight(50)
+        self.run_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2a3a5a, stop:1 #3a4a7a);
+                font-size: 16px;
+                border-radius: 25px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #3a4a7a, stop:1 #4a5a8a);
+            }
+        """)
+        self.run_btn.clicked.connect(self.on_run)
+
+        self.stop_btn = QPushButton("Stop")
+        self.stop_btn.setMinimumHeight(50)
+        self.stop_btn.setEnabled(False)
+        self.stop_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #8a2a2a, stop:1 #a03a3a);
+                font-size: 16px;
+                border-radius: 25px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #a03a3a, stop:1 #b04a4a);
+            }
+            QPushButton:disabled {
+                background: #444;
+                color: #888;
+            }
+        """)
+        self.stop_btn.clicked.connect(self.on_stop)
+
+        self.progress = QProgressBar()
+        self.progress.setStyleSheet("QProgressBar { height: 5px; border: none; background: #2d2d2d; } QProgressBar::chunk { background: #5a7a9a; }")
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addWidget(self.run_btn, 2)
+        btn_layout.addWidget(self.stop_btn, 1)
+
+        exec_layout.addLayout(btn_layout)
+        exec_layout.addWidget(self.progress)
+        exec_group.setLayout(exec_layout)
+        left_layout.addWidget(exec_group)
+
+        right_panel = QFrame()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setSpacing(20)
+
+        preview_group = QGroupBox("Results Preview")
+        preview_layout = QVBoxLayout()
+
+        self.image_label = ResizingLabel()
+
+        self.log_area = QTextEdit()
+        self.log_area.setReadOnly(True)
+        self.log_area.setMaximumHeight(100)
+        self.log_area.setStyleSheet("background-color: #1e1e1e; border: none; color: #888; font-size: 11px;")
+
+        preview_layout.addWidget(self.image_label, 1)
+        preview_layout.addWidget(self.log_area)
+        preview_group.setLayout(preview_layout)
+        right_layout.addWidget(preview_group, 1)
+
+        main_layout.addWidget(left_panel, 1)
+        main_layout.addWidget(right_panel, 2)
+
+    def select_file(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Select CSV Data File", filter="CSV Files (*.csv)")
+        if f:
+            self.file_label.setText(f)
+
+    def clear_file(self):
+        self.file_label.setText("Default: Use Clustering Results")
+
+    def on_run(self):
+        config = {
+            'type': 'heatmap',
+            'custom_file': self.file_label.text() if "Default" not in self.file_label.text() else None,
+            'heatmap_cmap': self.heatmap_cmap_combo.currentData(),
+        }
+        self.run_analysis_signal.emit(config)
+
+    def on_stop(self):
+        self.stop_analysis_signal.emit()
+        self.log_area.append("Stopping heatmap generation...")
+
+    def update_log(self, text):
+        self.log_area.append(text)
+
     def show_preview(self, image_path):
         self.image_label.set_image(image_path)
 
@@ -541,7 +750,7 @@ class CsvProcessorTab(QWidget):
         mode_group = QGroupBox("Mode")
         mode_layout = QVBoxLayout()
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["CSV Splitter", "CSV Mapper"])
+        self.mode_combo.addItems(["CSV Splitter", "CSV Mapper", "Arcsinh"])
         self.mode_combo.currentTextChanged.connect(self.set_mode)
         mode_layout.addWidget(self.mode_combo)
         mode_group.setLayout(mode_layout)
@@ -605,6 +814,22 @@ class CsvProcessorTab(QWidget):
         self.map_group.setLayout(map_layout)
         left_layout.addWidget(self.map_group)
 
+        self.arcsinh_group = QGroupBox("Arcsinh Transform")
+        arcsinh_layout = QVBoxLayout()
+        self.arcsinh_folder_btn = QPushButton("Select Folder for Arcsinh")
+        self.arcsinh_folder_btn.clicked.connect(self.select_arcsinh_folder)
+        self.arcsinh_folder_label = QLabel("No folder selected")
+        self.arcsinh_folder_label.setStyleSheet("color: #a0a0a0; font-size: 11px;")
+        self.arcsinh_desc_label = QLabel("Apply arcsinh(x / 5) to all non-label columns in each CSV file.")
+        self.arcsinh_desc_label.setWordWrap(True)
+        self.arcsinh_desc_label.setStyleSheet("color: #a0a0a0; font-size: 11px;")
+
+        arcsinh_layout.addWidget(self.arcsinh_folder_btn)
+        arcsinh_layout.addWidget(self.arcsinh_folder_label)
+        arcsinh_layout.addWidget(self.arcsinh_desc_label)
+        self.arcsinh_group.setLayout(arcsinh_layout)
+        left_layout.addWidget(self.arcsinh_group)
+
         left_layout.addStretch(1)
 
         exec_group = QGroupBox("Execution")
@@ -639,6 +864,21 @@ class CsvProcessorTab(QWidget):
         """)
         self.map_run_btn.clicked.connect(self.on_map)
         exec_layout.addWidget(self.map_run_btn)
+
+        self.arcsinh_run_btn = QPushButton("Run Arcsinh")
+        self.arcsinh_run_btn.setMinimumHeight(40)
+        self.arcsinh_run_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2a3a5a, stop:1 #3a4a7a);
+                font-size: 14px;
+                border-radius: 20px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #3a4a7a, stop:1 #4a5a8a);
+            }
+        """)
+        self.arcsinh_run_btn.clicked.connect(self.on_arcsinh)
+        exec_layout.addWidget(self.arcsinh_run_btn)
 
         exec_group.setLayout(exec_layout)
         exec_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
@@ -675,16 +915,21 @@ class CsvProcessorTab(QWidget):
         self.current_folder_path = None
         self.current_map_folder_path = None
         self.current_map_file_path = None
+        self.current_arcsinh_folder_path = None
         self.mode_combo.setCurrentText("CSV Splitter")
         self.set_mode("CSV Splitter")
 
     def set_mode(self, mode):
         splitter_mode = mode == "CSV Splitter"
+        mapper_mode = mode == "CSV Mapper"
+        arcsinh_mode = mode == "Arcsinh"
         self.input_group.setVisible(splitter_mode)
         self.split_group.setVisible(splitter_mode)
         self.run_btn.setVisible(splitter_mode)
-        self.map_group.setVisible(not splitter_mode)
-        self.map_run_btn.setVisible(not splitter_mode)
+        self.map_group.setVisible(mapper_mode)
+        self.map_run_btn.setVisible(mapper_mode)
+        self.arcsinh_group.setVisible(arcsinh_mode)
+        self.arcsinh_run_btn.setVisible(arcsinh_mode)
 
     def select_file(self):
         f, _ = QFileDialog.getOpenFileName(self, "Select CSV", filter="CSV Files (*.csv)")
@@ -718,6 +963,12 @@ class CsvProcessorTab(QWidget):
             self.current_map_file_path = f
             self.map_file_label.setText(f)
 
+    def select_arcsinh_folder(self):
+        d = QFileDialog.getExistingDirectory(self, "Select Folder for Arcsinh")
+        if d:
+            self.current_arcsinh_folder_path = d
+            self.arcsinh_folder_label.setText(d)
+
     def on_map(self):
         if not self.current_map_folder_path:
             self.log_area.append("Error: No folder selected for mapping.")
@@ -730,6 +981,16 @@ class CsvProcessorTab(QWidget):
             'type': 'map_folder',
             'folder_path': self.current_map_folder_path,
             'mapping_csv_path': self.current_map_file_path
+        })
+
+    def on_arcsinh(self):
+        if not self.current_arcsinh_folder_path:
+            self.log_area.append("Error: No folder selected for arcsinh.")
+            return
+
+        self.run_process_signal.emit({
+            'type': 'arcsinh_folder',
+            'folder_path': self.current_arcsinh_folder_path
         })
 
     def on_file_loaded(self, df_head, row_opts, col_opts):

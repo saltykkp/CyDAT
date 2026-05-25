@@ -7,8 +7,12 @@ import seaborn as sns
 import numpy as np
 import pandas as pd
 from pathlib import Path
+import re
 
 class Visualizer:
+    MAX_HEATMAP_CLUSTER_ROWS = 500
+    MAX_HEATMAP_TICK_LABELS = 100
+
     @staticmethod
     def _format_group_label(group_value, *, prefix_cluster: bool) -> str:
         if prefix_cluster:
@@ -18,39 +22,65 @@ class Visualizer:
                 return f"Cluster {group_value}"
         return str(group_value)
     @staticmethod
-    def plot_heatmap(data, labels, feature_names, output_path, dpi=300):
+    def plot_heatmap(data, labels, feature_names, output_path, dpi=300, cmap="Spectral_r"):
         """
         Generates heatmap of cluster mean expression levels.
         """
-        # Create DataFrame
         df = pd.DataFrame(data, columns=feature_names)
+        df = df.apply(pd.to_numeric, errors='coerce')
+        df = df.replace([np.inf, -np.inf], np.nan)
         df['Cluster'] = labels
-        
-        # Calculate mean expression per cluster
-        cluster_means = df.groupby('Cluster').mean()
-        
-        # Create Clustermap
-        # standard_scale=1 normalizes columns to 0-1 range, matching the "Normalized intensity" style
-        # Spectral_r gives the reversed Spectral: Blue -> Green -> Yellow -> Orange -> Red (Low to High)
-        # This matches the user requirement: "highest is red, lowest is blue"
-        # Wait, standard Spectral is Red (low) -> Blue (high)? No.
-        # Spectral: Red(0) -> Orange -> Yellow -> Green -> Blue(1)  [Actually Spectral is typically Red->Blue in many maps, let's check]
-        # Matplotlib Spectral: Red (0) ... Blue (1). 
-        # User wants: Highest=Red, Lowest=Blue.
-        # So we need Blue (0) -> Red (1).
-        # Spectral_r is Blue (0) -> Red (1).
-        # Let's verify standard Spectral. Usually Spectral is Red->Yellow->Violet/Blue.
-        # If user wants High=Red, Low=Blue, we need the reverse of Spectral (which starts at Red).
-        # So Spectral_r (Reverse Spectral) should be Blue -> Red.
-        
-        g = sns.clustermap(cluster_means, 
-                           standard_scale=1, 
-                           cmap="Spectral_r", 
-                           figsize=(12, 10),
-                           annot=False,
-                           dendrogram_ratio=(0.05, 0.05), # Make dendrograms even shorter (5% of fig size)
-                           tree_kws={'linewidths': 1.5},
-                           cbar_kws={'label': 'Normalized intensity', 'orientation': 'vertical'})
+
+        cluster_means = df.groupby('Cluster').mean(numeric_only=True)
+        cluster_means = cluster_means.replace([np.inf, -np.inf], np.nan)
+
+        # Drop fully invalid columns/rows first; scipy linkage requires finite input.
+        cluster_means = cluster_means.dropna(axis=1, how='all').dropna(axis=0, how='all')
+        if cluster_means.empty:
+            raise ValueError("Heatmap data contains no valid numeric values after cleaning.")
+
+        # Fill remaining gaps with the column mean so hierarchical clustering receives finite values.
+        cluster_means = cluster_means.apply(lambda col: col.fillna(col.mean()), axis=0)
+        cluster_means = cluster_means.fillna(0.0)
+
+        col_min = cluster_means.min(axis=0)
+        col_range = cluster_means.max(axis=0) - col_min
+        normalized = cluster_means.subtract(col_min, axis=1)
+        normalized = normalized.divide(col_range.replace(0, np.nan), axis=1)
+        normalized = normalized.fillna(0.0)
+
+        if not np.isfinite(normalized.to_numpy()).all():
+            raise ValueError("Heatmap normalization produced non-finite values.")
+
+        row_cluster = 1 < normalized.shape[0] <= Visualizer.MAX_HEATMAP_CLUSTER_ROWS
+        col_cluster = normalized.shape[1] > 1
+
+        g = sns.clustermap(
+            normalized,
+            cmap=cmap,
+            figsize=(12, 10),
+            annot=False,
+            row_cluster=row_cluster,
+            col_cluster=col_cluster,
+            dendrogram_ratio=(0.05, 0.05),
+            tree_kws={'linewidths': 1.5},
+            cbar_kws={'label': 'Normalized intensity', 'orientation': 'vertical'},
+        )
+
+        # Seaborn reorders heatmap rows after hierarchical clustering.
+        # Explicitly reset tick positions and labels from the reordered index
+        # so the cluster labels on the right match each heatmap row exactly.
+        row_order = g.dendrogram_row.reordered_ind if g.dendrogram_row is not None else list(range(normalized.shape[0]))
+        ordered_labels = normalized.index.to_numpy()[row_order]
+        g.ax_heatmap.set_yticks(np.arange(len(ordered_labels)) + 0.5)
+        if len(ordered_labels) <= Visualizer.MAX_HEATMAP_TICK_LABELS:
+            g.ax_heatmap.set_yticklabels([str(label) for label in ordered_labels], rotation=0)
+        else:
+            g.ax_heatmap.set_yticklabels([])
+        g.ax_heatmap.yaxis.tick_right()
+        g.ax_heatmap.yaxis.set_label_position("right")
+        g.ax_heatmap.tick_params(axis='y', length=0, pad=2, labelsize=9)
+        g.ax_heatmap.set_ylabel("Cluster")
         
         # Adjust colorbar
         # The colorbar is in g.cax
@@ -114,16 +144,41 @@ class Visualizer:
         return colors
 
     @staticmethod
-    def plot_embedding_2d(embedding, labels, output_path, dpi=300):
-        # Determine algorithm type from filename or context if possible
-        # Default to generic names, but try to infer from output_path name if contains t-SNE or UMAP
+    def _sanitize_filename_part(value):
+        text = str(value).strip()
+        text = re.sub(r'[<>:"/\\|?*]+', "_", text)
+        text = re.sub(r"\s+", "_", text)
+        return text[:80] or "Unknown"
+
+    @staticmethod
+    def _infer_embedding_axis_labels(output_path):
         path_str = str(output_path).lower()
         if "umap" in path_str:
-            x_label, y_label = "UMAP1", "UMAP2"
-        elif "tsne" in path_str or "t-sne" in path_str:
-            x_label, y_label = "tSNE1", "tSNE2"
-        else:
-            x_label, y_label = "Dim 1", "Dim 2"
+            return "UMAP1", "UMAP2"
+        if "tsne" in path_str or "t-sne" in path_str:
+            return "tSNE1", "tSNE2"
+        return "Dim 1", "Dim 2"
+
+    @staticmethod
+    def _style_embedding_axes(ax, x_label, y_label):
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_visible(False)
+        ax.spines['bottom'].set_visible(False)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.text(0.05, 0.02, x_label, transform=ax.transAxes,
+                fontsize=14, fontweight='normal', va='bottom', ha='left')
+        ax.annotate('', xy=(0.2, 0.028), xytext=(0.12, 0.028), xycoords='axes fraction',
+                    arrowprops=dict(arrowstyle="->", color='black', lw=1.5))
+        ax.text(0.02, 0.05, y_label, transform=ax.transAxes,
+                fontsize=14, fontweight='normal', va='bottom', ha='left', rotation=90)
+        ax.annotate('', xy=(0.028, 0.2), xytext=(0.028, 0.12), xycoords='axes fraction',
+                    arrowprops=dict(arrowstyle="->", color='black', lw=1.5))
+
+    @staticmethod
+    def plot_embedding_2d(embedding, labels, output_path, dpi=300):
+        x_label, y_label = Visualizer._infer_embedding_axis_labels(output_path)
 
         plt.figure(figsize=(10, 10))
         labels = np.asarray(labels)
@@ -144,31 +199,8 @@ class Visualizer:
                         c=[palette[i]], label=Visualizer._format_group_label(label, prefix_cluster=prefix_cluster), 
                         s=8, alpha=1.0, edgecolors='none', linewidths=0)
             
-        # Clean style similar to reference image
         ax = plt.gca()
-        
-        # Remove spines (border)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        ax.spines['left'].set_visible(False)
-        ax.spines['bottom'].set_visible(False)
-        
-        # Remove ticks
-        ax.set_xticks([])
-        ax.set_yticks([])
-        
-        # Add custom arrow labels
-        # X-axis label and arrow
-        ax.text(0.05, 0.02, x_label, transform=ax.transAxes, 
-                fontsize=14, fontweight='normal', va='bottom', ha='left')
-        ax.annotate('', xy=(0.2, 0.028), xytext=(0.12, 0.028), xycoords='axes fraction', 
-                    arrowprops=dict(arrowstyle="->", color='black', lw=1.5))
-
-        # Y-axis label and arrow
-        ax.text(0.02, 0.05, y_label, transform=ax.transAxes, 
-                fontsize=14, fontweight='normal', va='bottom', ha='left', rotation=90)
-        ax.annotate('', xy=(0.028, 0.2), xytext=(0.028, 0.12), xycoords='axes fraction', 
-                    arrowprops=dict(arrowstyle="->", color='black', lw=1.5))
+        Visualizer._style_embedding_axes(ax, x_label, y_label)
         
         # Custom legend positioned below the plot
         import matplotlib.lines as mlines
@@ -199,6 +231,46 @@ class Visualizer:
         
         plt.savefig(output_path, dpi=dpi)
         plt.close()
+
+    @staticmethod
+    def plot_embedding_2d_highlight_series(embedding, labels, output_dir, prefix, dpi=300):
+        labels = np.asarray(labels)
+        unique_labels = np.unique(labels)
+        if len(unique_labels) == 0:
+            return []
+
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        x_label, y_label = Visualizer._infer_embedding_axis_labels(prefix)
+        palette = Visualizer._get_high_contrast_palette(len(unique_labels))
+        color_map = {label: palette[i] for i, label in enumerate(unique_labels)}
+        saved_paths = []
+
+        for label in unique_labels:
+            fig, ax = plt.subplots(figsize=(10, 10))
+            mask = labels == label
+            ax.scatter(
+                embedding[~mask, 0], embedding[~mask, 1],
+                c=['#c0c0c0'], s=8, alpha=0.35, edgecolors='none', linewidths=0,
+            )
+            ax.scatter(
+                embedding[mask, 0], embedding[mask, 1],
+                c=[color_map[label]], s=10, alpha=1.0, edgecolors='none', linewidths=0,
+                label=str(label),
+            )
+            Visualizer._style_embedding_axes(ax, x_label, y_label)
+            ax.legend(loc='upper center', bbox_to_anchor=(0.5, 0.0), ncol=1,
+                      frameon=False, fontsize=10, handletextpad=0.1)
+            plt.tight_layout()
+            plt.subplots_adjust(bottom=0.12)
+
+            file_name = f"{prefix}_{Visualizer._sanitize_filename_part(label)}.png"
+            output_path = output_dir / file_name
+            plt.savefig(output_path, dpi=dpi)
+            plt.close(fig)
+            saved_paths.append(str(output_path))
+
+        return saved_paths
 
     @staticmethod
     def plot_embedding_3d(embedding, labels, output_path, dpi=300):

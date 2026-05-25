@@ -1,7 +1,21 @@
-import pandas as pd
-from pathlib import Path
-from datetime import datetime
 import os
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+from src.utils.output_paths import create_unique_output_dir
+
+
+LABEL_COLUMN_NAMES = {"cluster_label", "cell_type", "batch_label", "cluster", "label"}
+
+
+def _normalize_col_name(col_name):
+    return str(col_name).strip().lower()
+
+
+def _get_non_label_columns(columns):
+    return [col for col in columns if _normalize_col_name(col) not in LABEL_COLUMN_NAMES]
 
 class CsvSplitter:
     def __init__(self):
@@ -87,9 +101,7 @@ class CsvSplitter:
         if self.df is None:
             raise ValueError("No CSV file loaded.")
 
-        timestamp = datetime.now().strftime("%y%m%d_%H%M")
-        output_dir = Path(output_base_dir) / "csv_proc" / timestamp
-        output_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = create_unique_output_dir(Path(output_base_dir) / "csv_proc")
 
         if row_indices is None:
             subset = self.df
@@ -124,9 +136,7 @@ class CsvSplitter:
         else:
             special_col = None
 
-        timestamp = datetime.now().strftime("%y%m%d_%H%M")
-        output_dir = Path(output_base_dir) / "csv_proc" / timestamp
-        output_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = create_unique_output_dir(Path(output_base_dir) / "csv_proc")
 
         valid_cols = [c for c in col_indices if c in common_columns]
         if not valid_cols:
@@ -225,9 +235,7 @@ class CsvMapper:
 
         mapping = self._load_mapping(mapping_csv_path)
         mapping_path = Path(mapping_csv_path).resolve()
-        timestamp = datetime.now().strftime("%y%m%d_%H%M")
-        output_dir = folder / "anno_result" / timestamp
-        output_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = create_unique_output_dir(folder / "anno_result")
 
         out_paths = []
         for f in csv_files:
@@ -244,10 +252,43 @@ class CsvMapper:
             original = df[cl_col].astype(str)
             mapped = original.map(mapping)
             mapped = mapped.where(~mapped.isna(), original)
+            keep_mask = ~mapped.astype(str).str.strip().str.lower().eq("noise")
 
             insert_pos = list(df.columns).index(cl_col)
             df = df.drop(columns=[cl_col])
             df.insert(insert_pos, "cell_type", mapped)
+            df = df.loc[keep_mask].reset_index(drop=True)
+
+            out_path = output_dir / f.name
+            df.to_csv(out_path, index=False)
+            out_paths.append(str(out_path))
+
+        return str(output_dir), out_paths
+
+
+class ArcsinhTransformer:
+    def __init__(self, cofactor=5.0):
+        self.cofactor = float(cofactor)
+
+    def transform_folder(self, folder_path):
+        folder = Path(folder_path)
+        csv_files = list(folder.glob("*.csv"))
+        if not csv_files:
+            raise ValueError("No CSV files found in the folder.")
+
+        output_dir = create_unique_output_dir(folder / "arcsinh_result")
+        out_paths = []
+
+        for f in csv_files:
+            df = pd.read_csv(f)
+            transform_cols = _get_non_label_columns(df.columns)
+
+            for col in transform_cols:
+                numeric_values = pd.to_numeric(df[col], errors="coerce")
+                valid_mask = numeric_values.notna()
+                if valid_mask.any():
+                    df[col] = df[col].astype(object)
+                    df.loc[valid_mask, col] = np.arcsinh(numeric_values.loc[valid_mask] / self.cofactor).astype(float)
 
             out_path = output_dir / f.name
             df.to_csv(out_path, index=False)

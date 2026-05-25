@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
 
 from src.analysis.visualization import Visualizer
+from src.utils.output_paths import create_unique_output_dir
 
 
 @dataclass(frozen=True)
@@ -58,9 +58,9 @@ class DifferenceAnalyzer:
         input_dir = Path(input_dir)
         percentages = self.compute_cell_type_percentages(input_dir)
 
-        timestamp = datetime.now().strftime("%y%m%d_%H%M")
-        output_dir = input_dir / "Difference Analysis" / "Percentage Stacked Bar Chart" / timestamp
-        output_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = create_unique_output_dir(
+            input_dir / "Difference Analysis" / "Percentage Stacked Bar Chart"
+        )
 
         plot_path = output_dir / "percentage_stacked_bar_chart.png"
         Visualizer.plot_percentage_stacked_bar_chart(percentages, str(plot_path))
@@ -70,4 +70,3 @@ class DifferenceAnalyzer:
             plot_path=plot_path,
             percentages=percentages,
         )
-

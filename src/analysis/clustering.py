@@ -2,7 +2,6 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from sklearn.cluster import KMeans
-from sklearn.preprocessing import StandardScaler
 import warnings
 
 # Try importing phenograph
@@ -27,30 +26,27 @@ class ClusterManager:
         self.cluster_centers = None
 
     def preprocess(self):
-        """Standardize the data before clustering"""
+        """Use raw feature values directly before clustering."""
         data = self.data_loader.get_feature_data()
         if data is None:
             raise ValueError("No data loaded")
-        
-        scaler = StandardScaler()
-        self.scaled_data = scaler.fit_transform(data)
+
+        self.scaled_data = data.to_numpy()
         return self.scaled_data
 
     def run_kmeans(self, n_clusters=10, max_iter=300, random_state=42):
-        if self.scaled_data is None:
-            self.preprocess()
+        self.preprocess()
             
         kmeans = KMeans(n_clusters=n_clusters, max_iter=max_iter, random_state=random_state, n_init=10)
         self.labels = kmeans.fit_predict(self.scaled_data) + 1 # Start from 1
         self.cluster_centers = kmeans.cluster_centers_
         return self.labels
 
-    def run_phenograph(self, k=30, metric='euclidean', random_state=None):
+    def run_phenograph(self, k=30, metric='euclidean', random_state=None, louvain_time_limit=2400):
         if not PHENOGRAPH_AVAILABLE:
             raise ImportError("Phenograph is not installed. Please install it to use this feature.")
-            
-        if self.scaled_data is None:
-            self.preprocess()
+
+        self.preprocess()
 
         # Phenograph implementation
         # Note: phenograph.cluster returns (communities, graph, Q)
@@ -59,7 +55,12 @@ class ClusterManager:
         if random_state is not None:
             np.random.seed(random_state)
             
-        communities, _, _ = phenograph.cluster(self.scaled_data, k=k, metric=metric)
+        communities, _, _ = phenograph.cluster(
+            self.scaled_data,
+            k=k,
+            metric=metric,
+            louvain_time_limit=louvain_time_limit,
+        )
         self.labels = communities + 1 # Start from 1
         return self.labels
 
@@ -67,8 +68,7 @@ class ClusterManager:
         if not FLOWSOM_AVAILABLE:
             raise ImportError("flowsom is not installed. Please install it to use this feature.")
 
-        if self.scaled_data is None:
-            self.preprocess()
+        self.preprocess()
 
         adata = ad.AnnData(self.scaled_data)
         feature_data = self.data_loader.get_feature_data()

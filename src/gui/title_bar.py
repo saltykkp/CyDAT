@@ -88,7 +88,7 @@ class CloseButton(TitleBarButton):
         painter.drawLine(int(cx + 5), int(cy - 5), int(cx - 5), int(cy + 5))
 
 
-from pathlib import Path
+from src.utils.runtime_paths import get_resource_path
 
 class CustomTitleBar(QWidget):
     def __init__(self, parent=None):
@@ -103,7 +103,7 @@ class CustomTitleBar(QWidget):
         
         # Icon
         self.icon_label = QLabel()
-        icon_path = str(Path(__file__).resolve().parent.parent.parent / "resources" / "icon.png")
+        icon_path = str(get_resource_path("resources", "icon.png"))
         pixmap = QPixmap(icon_path)
         if not pixmap.isNull():
             self.icon_label.setPixmap(pixmap.scaled(20, 20, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
