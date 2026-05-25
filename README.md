@@ -52,8 +52,6 @@ High-dimensional single-cell CyTOF data analysis desktop app (PyQt6).
 
 ## Documentation
 - User Manual: [docs/USER_MANUAL.md](docs/USER_MANUAL.md)
-- 中文用户手册: [docs/USER_MANUAL_CN.md](docs/USER_MANUAL_CN.md)
-- API Documentation: [docs/API_DOCUMENTATION.md](docs/API_DOCUMENTATION.md)
 
 ## Requirements
 - Python 3.13+
