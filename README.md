@@ -1,13 +1,14 @@
-# CyDAT (CyTOF Data Analysis Toolkit)
+# CyDAT (CyTOFKit_v02)
 
 High-dimensional single-cell CyTOF data analysis desktop app (PyQt6).
 
 ## Features
 - Clustering Analysis: KMeans / Phenograph (optional) / FlowSOM (flowsom)
 - Dim Reduction & Visualization: t-SNE / UMAP (supports custom CSV input)
-- CSV Processor:
+- Utils:
   - CSV Splitter: split one CSV or a folder of CSVs by selected rows/columns
   - CSV Mapper: map `cluster_label` → `cell_type` using a mapping CSV (batch over a folder)
+  - Arcsinh: apply `arcsinh(x / 5)` to all non-label columns across a folder of CSVs
 - Difference Analysis:
   - Percentage Stacked Bar Chart: compare sample `cell_type` composition across a folder of CSVs
 
@@ -30,6 +31,9 @@ High-dimensional single-cell CyTOF data analysis desktop app (PyQt6).
 - CSV Mapper expects:
   - Input CSVs contain a `cluster_label` column (case-insensitive).
   - Mapping CSV contains `cluster_label` and `cell_type` columns (case-insensitive), or the first two columns are used.
+- Arcsinh expects:
+  - Input is a folder of CSV files.
+  - Label columns such as `cluster_label`, `cell_type`, `batch_label`, `cluster`, and `label` remain unchanged.
 - Difference Analysis (Percentage Stacked Bar Chart) expects `cell_type` in each CSV (case-insensitive).
 
 ## Outputs (Summary)
@@ -41,11 +45,14 @@ High-dimensional single-cell CyTOF data analysis desktop app (PyQt6).
   - `csv_proc/<timestamp>/split_<filename>.csv`
 - CSV Mapper:
   - `anno_result/<timestamp>/<filename>.csv` (with `cell_type` column)
+- Arcsinh:
+  - `arcsinh_result/<timestamp>/<filename>.csv`
 - Difference Analysis:
   - `Difference Analysis/Percentage Stacked Bar Chart/<timestamp>/percentage_stacked_bar_chart.png`
 
 ## Documentation
 - User Manual: [docs/USER_MANUAL.md](docs/USER_MANUAL.md)
+- 中文用户手册: [docs/USER_MANUAL_CN.md](docs/USER_MANUAL_CN.md)
 - API Documentation: [docs/API_DOCUMENTATION.md](docs/API_DOCUMENTATION.md)
 
 ## Requirements
